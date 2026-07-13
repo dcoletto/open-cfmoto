@@ -299,13 +299,33 @@ class EasyConnProber(
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val target = network ?: cm.activeNetwork ?: return null
         val lp = cm.getLinkProperties(target) ?: return null
+        // 1. AP-hotspot bikes (action=9): the gateway is the default-route next hop (e.g. 192.168.0.1).
         for (r in lp.routes) {
             if (r.isDefaultRoute) {
                 val gw = r.gateway
-                if (gw is Inet4Address && !gw.isAnyLocalAddress) return gw
+                if (gw is Inet4Address && !gw.isAnyLocalAddress) {
+                    log("gateway via default route: ${gw.hostAddress}")
+                    return gw
+                }
             }
         }
-        return lp.dnsServers.filterIsInstance<Inet4Address>().firstOrNull()
+        lp.dnsServers.filterIsInstance<Inet4Address>().firstOrNull()?.let {
+            log("gateway via DNS server: ${it.hostAddress}")
+            return it
+        }
+        // 2. Wi-Fi Direct bikes (action=73, DIRECT-… SSID) provide NO default route and NO DNS —
+        //    the bike is the P2P group owner, which Android fixes at <subnet>.1 (e.g. 192.168.49.1).
+        //    This also matches AP mode (x.x.x.1), so it's a safe general fallback.
+        val myV4 = lp.linkAddresses.map(LinkAddress::getAddress)
+            .filterIsInstance<Inet4Address>().firstOrNull { !it.isLoopbackAddress }
+        if (myV4 != null) {
+            val octets = myV4.address       // fresh copy; safe to mutate
+            octets[3] = 1
+            val gw = java.net.InetAddress.getByAddress(octets) as Inet4Address
+            log("gateway derived as subnet .1 (Wi-Fi Direct / no default route): ${gw.hostAddress}")
+            return gw
+        }
+        return null
     }
 
     private fun pickBikeInterfaceIp(network: Network?): Inet4Address? {

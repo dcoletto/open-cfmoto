@@ -24,8 +24,19 @@ http://www.carbit.com.cn/downsdk/657/658/_sdk?modelid=37416&sn=peTz&action=9
 
 - `ssid` / `pwd` / `auth` / `mac` / `name` — **stable across scans** (the bike's Wi-Fi AP creds).
 - `sn` — a random nonce, **changes every QR**, and is **not used** by the connection flow.
-- `action=9` — a bitmask of supported transport modes (bit0 AP, bit1 AP+internet, bit3 P2P, bit6 BT).
-  We only use AP mode: join the SSID, done.
+- `action` — a bitmask of supported transport modes (bit0=1 AP, bit1=2 AP+internet, bit3=8 P2P,
+  bit6=64 BT). Two hardware variants seen in the wild:
+  - **`action=9`** (=1+8) with `ssid=CFMOTO-xxxx` → **AP hotspot**. Phone joins the AP, gets
+    `192.168.0.50`, bike is the gateway `192.168.0.1`.
+  - **`action=73`** (=1+8+64) with `ssid=DIRECT-go-CFMOTO-xxxx` → **Wi-Fi Direct**. Phone joins the
+    `DIRECT-` group as a normal station (via `WifiNetworkSpecifier` — works fine), gets `192.168.49.x`,
+    and the bike is the **P2P group owner at `192.168.49.1`**. Wi-Fi Direct provides **no default route
+    and no DNS**, so `resolveGateway` must fall back to `<subnet>.1` (implemented). Confirmed against the
+    decompiled app: both transports funnel into the SAME `MDNSClient.tryConnectToServer` → PXC handshake,
+    so **everything downstream (probe :10930, ports 10920/10921/10922, CmdBaseHead/ReqBase, video pull)
+    is IDENTICAL** — only the transport + bike-IP resolution differ.
+  - Newer QR may also carry `bm=<hex>` (Bluetooth MAC for BLE pairing) and omit `sn` — both irrelevant
+    to the Wi-Fi/PXC flow.
 - Parsing mirrors the official `QrResult.parseResult`. See `QrData.kt`.
 
 ## 2. Network topology (THE PHONE IS THE SERVER)
