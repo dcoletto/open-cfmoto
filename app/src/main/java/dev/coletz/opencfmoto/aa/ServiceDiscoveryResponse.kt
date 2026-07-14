@@ -13,8 +13,8 @@ import dev.coletz.opencfmoto.aa.proto.Control
 import dev.coletz.opencfmoto.aa.proto.Media
 import dev.coletz.opencfmoto.aa.proto.Sensors
 
-class ServiceDiscoveryResponse(bike: BikeModel)
-    : AapMessage(Channel.ID_CTR, Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_RESPONSE_VALUE, makeProto(bike)) {
+class ServiceDiscoveryResponse(bike: BikeModel, densityDpi: Int = bike.densityDpi)
+    : AapMessage(Channel.ID_CTR, Control.ControlMsgType.MESSAGE_SERVICE_DISCOVERY_RESPONSE_VALUE, makeProto(bike, densityDpi)) {
 
     companion object {
         // AA only streams the fixed codec resolutions below. The BikeModel picks the smallest
@@ -34,7 +34,7 @@ class ServiceDiscoveryResponse(bike: BikeModel)
             else -> error("${bike.name}: ${bike.aaWidth}x${bike.aaHeight} is not an AA codec resolution")
         }
 
-        private fun makeProto(bike: BikeModel): Message {
+        private fun makeProto(bike: BikeModel, densityDpi: Int): Message {
             val services = mutableListOf<Control.Service>()
 
             // --- Sensor service (driving status + night) ---
@@ -57,7 +57,7 @@ class ServiceDiscoveryResponse(bike: BikeModel)
                         Control.Service.MediaSinkService.VideoConfiguration.newBuilder().apply {
                             codecResolution = codecResolutionFor(bike)
                             frameRate = Control.Service.MediaSinkService.VideoConfiguration.VideoFrameRateType._30
-                            setDensity(bike.densityDpi)
+                            setDensity(densityDpi)
                             setMarginWidth(bike.marginWidth)
                             setMarginHeight(bike.marginHeight)
                             setVideoCodecType(Media.MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP)

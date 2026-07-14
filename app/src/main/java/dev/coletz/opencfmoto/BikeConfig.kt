@@ -11,7 +11,8 @@ import android.content.Context
  *    fixed sizes (see ServiceDiscoveryResponse.codecResolutionFor), so pick the smallest one
  *    that fully contains the panel; the leftover is declared as margins and the phone renders
  *    the UI into a centered bikeWidth x bikeHeight viewport that SurfaceCropper extracts 1:1.
- *  - [densityDpi]: DPI reported to the phone — tunes how large the AA UI draws on this panel.
+ *  - [densityDpi]: default DPI reported to the phone — tunes how large the AA UI draws on this
+ *    panel. Users can override it per-phone in Settings (see [BikeConfig.dpiOverride]).
  *
  * Portrait panels are supported the same way — use a portrait AA resolution (e.g. 720x1280).
  *
@@ -52,14 +53,27 @@ enum class BikeModel(
 object BikeConfig {
     private const val PREFS = "opencfmoto_settings"
     private const val KEY_BIKE_MODEL = "bike_model"
+    private const val KEY_DPI_OVERRIDE = "dpi_override"   // 0 / absent = use the model default
+
+    /** Sane clamp for the DPI reported to the phone; outside this AA renders unusably. */
+    const val DPI_MIN = 80
+    const val DPI_MAX = 640
 
     @Volatile var model: BikeModel = BikeModel.SR_675
         private set
 
+    /** User-chosen DPI, or null to use the selected model's [BikeModel.densityDpi] default. */
+    @Volatile var dpiOverride: Int? = null
+        private set
+
+    /** DPI actually reported to the phone: the user override if set, else the model default. */
+    val effectiveDpi: Int get() = dpiOverride ?: model.densityDpi
+
     fun load(context: Context): BikeModel {
-        val name = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_BIKE_MODEL, null)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val name = prefs.getString(KEY_BIKE_MODEL, null)
         model = BikeModel.entries.firstOrNull { it.name == name } ?: BikeModel.SR_675
+        dpiOverride = prefs.getInt(KEY_DPI_OVERRIDE, 0).takeIf { it in DPI_MIN..DPI_MAX }
         return model
     }
 
@@ -67,5 +81,13 @@ object BikeConfig {
         model = newModel
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY_BIKE_MODEL, newModel.name).apply()
+    }
+
+    /** Pass null to clear the override and fall back to the model default. */
+    fun saveDpiOverride(context: Context, dpi: Int?) {
+        require(dpi == null || dpi in DPI_MIN..DPI_MAX) { "dpi $dpi outside $DPI_MIN..$DPI_MAX" }
+        dpiOverride = dpi
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_DPI_OVERRIDE, dpi ?: 0).apply()
     }
 }

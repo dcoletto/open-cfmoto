@@ -254,6 +254,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSettingsDialog() {
+        val dpiLabel = BikeConfig.dpiOverride?.let { "$it (custom)" }
+            ?: "${BikeConfig.model.densityDpi} (bike default)"
+        val items = arrayOf(
+            "Bike model: ${BikeConfig.model.displayName}",
+            "Android Auto DPI: $dpiLabel",
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Settings")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showBikeModelDialog()
+                    1 -> showDpiDialog()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showBikeModelDialog() {
         val models = BikeModel.entries
         val labels = models.map { "${it.displayName}  (${it.bikeWidth}x${it.bikeHeight})" }.toTypedArray()
         val current = models.indexOf(BikeConfig.model)
@@ -262,15 +281,55 @@ class MainActivity : AppCompatActivity() {
             .setSingleChoiceItems(labels, current) { dialog, which ->
                 val model = models[which]
                 BikeConfig.save(applicationContext, model)
-                log("→ bike model set: $model")
-                if (AndroidAutoService.isRunning) {
-                    log("!! Android Auto is running — the new model applies on the next Start")
-                    Toast.makeText(this, "Applies on next Start", Toast.LENGTH_SHORT).show()
-                }
+                log("→ bike model set: $model (effective dpi=${BikeConfig.effectiveDpi})")
+                warnIfAaRunning()
                 dialog.dismiss()
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun showDpiDialog() {
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "Bike default: ${BikeConfig.model.densityDpi}"
+            BikeConfig.dpiOverride?.let { setText(it.toString()) }
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Android Auto DPI")
+            .setMessage(
+                "Higher = bigger UI elements, lower = more content on screen. " +
+                    "Allowed: ${BikeConfig.DPI_MIN}–${BikeConfig.DPI_MAX}."
+            )
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val dpi = input.text.toString().toIntOrNull()
+                if (dpi == null || dpi !in BikeConfig.DPI_MIN..BikeConfig.DPI_MAX) {
+                    Toast.makeText(
+                        this,
+                        "DPI must be ${BikeConfig.DPI_MIN}–${BikeConfig.DPI_MAX}",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@setPositiveButton
+                }
+                BikeConfig.saveDpiOverride(applicationContext, dpi)
+                log("→ DPI override set: $dpi")
+                warnIfAaRunning()
+            }
+            .setNeutralButton("Use bike default") { _, _ ->
+                BikeConfig.saveDpiOverride(applicationContext, null)
+                log("→ DPI override cleared — using bike default (${BikeConfig.model.densityDpi})")
+                warnIfAaRunning()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun warnIfAaRunning() {
+        if (AndroidAutoService.isRunning) {
+            log("!! Android Auto is running — the new setting applies on the next Start")
+            Toast.makeText(this, "Applies on next Start", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun ensureLocationPermission() {

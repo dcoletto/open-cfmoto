@@ -184,8 +184,9 @@ internal class AapControlService(private val aapTransport: AapTransport) : AapCo
     private fun serviceDiscoveryRequest(request: Control.ServiceDiscoveryRequest): Int {
         AaLog.i("Service Discovery Request: %s", request.phoneName)
         val model = dev.coletz.opencfmoto.BikeConfig.model
-        AaLog.i("Advertising video for $model, margins ${model.marginWidth}x${model.marginHeight}")
-        aapTransport.send(ServiceDiscoveryResponse(model))
+        val dpi = dev.coletz.opencfmoto.BikeConfig.effectiveDpi
+        AaLog.i("Advertising video for $model, margins ${model.marginWidth}x${model.marginHeight}, dpi=$dpi")
+        aapTransport.send(ServiceDiscoveryResponse(model, dpi))
         return 0
     }
 
