@@ -66,6 +66,9 @@ data class PxcFrame(val cmd: Int, val payload: ByteArray) {
         const val CMD_QUERY_SPEED_RLY     = 0x10691
         const val CMD_CHECK_SN            = 0x103e0    // bike→phone {client_set,sn}; reply 0x103e1 + result
         const val CMD_CHECK_SN_ACK        = 0x103e1
+        const val CMD_START_OTA_FTP       = 0x104a0    // bike→phone ECP_C2P_START_OTA_FTP_SERVICE (66720); needReceiveReply=true
+        const val CMD_START_OTA_FTP_ACK   = 0x104a1
+        const val CMD_START_OTA_FTP_RESULT = 131712    // 0x20280  phone→bike ECP_P2C_START_OTA_FTP_SERVICE_RESULT {isOk,dataPort,ctrlPort,errCode,errMsg}
         const val CMD_CHECK_SN_RESULT     = 0x201c0    // phone→bike {isOk,...}; bike acks 0x201c1
 
         // PXC application-level commands (sent AFTER channel selection completes).

@@ -133,3 +133,35 @@ speaker / BT helmet. Reconnect/auto-start UX.
 
 Read `01` and `02` fully before starting; the bike protocol and the encoder constraints there are exact
 and hard-won.
+
+## Update (2026-07): status + PORTRAIT-BIKE variant (M1–M3 largely working)
+
+The AA receiver + PXC hand-off is working: on the owner's 800×386 landscape bike, Android Auto renders
+on the dash. Wi-Fi Direct bikes (`action=73`, see `01` §1) also connect (gateway = `<subnet>.1`).
+
+**New hardware variant — a PORTRAIT bike** (HUID `CRCP24…`, `CFMOTO-EF75C7`, Wi-Fi Direct): its
+`REQ_RV_CONFIG_CAPTURE` asks for **460×750 portrait**. This exposed a real design gap:
+
+- The shared AA encoder is created at a **fixed 800×384** (landscape) *before* the bike's resolution is
+  known (AA video is 800×480 landscape). We now report the encoder's *actual* resolution in
+  `RLY_RV_CONFIG_CAPTURE` (interim fix in `EasyConnProber` — stops the decoder-mismatch **Connection
+  reset** that killed the stream after ~5 frames). With that, a portrait bike will *display* the
+  landscape AA feed, but **squished/letterboxed** — not a real fix.
+- **Proper fix (your task):** make the video pipeline resolution + orientation **follow the bike**:
+  1. Learn the bike's requested `deviceWidth×deviceHeight` (portrait vs landscape) from
+     `REQ_RV_CONFIG_CAPTURE` — but note this arrives *after* AA projection has already started.
+  2. Request the matching **orientation/resolution from Android Auto** in `ServiceDiscoveryResponse`
+     (AA supports **portrait** head units; HUR has portrait-mode support). So for a portrait bike, AA
+     itself renders portrait and the aspect matches.
+  3. Size the H.264 **encoder to the bike's negotiated resolution** (rounded to ×16), not a fixed
+     800×384. Because AA starts before the bike scan, you'll likely need to either (a) defer/recreate the
+     encoder once the bike's dims are known, decoding AA into an intermediate `SurfaceTexture` and
+     GL-scaling into a per-bike-sized encoder, or (b) start AA at a resolution chosen from a
+     remembered/last-known bike profile.
+- **`cmd 0x104a0` = `ECP_C2P_START_OTA_FTP_SERVICE`** (bike offers an OTA firmware FTP server:
+  `{ctrlPort,dataPort,pwd,userName:"carbit_ota_user"}`). Optional/unrelated to video; currently ignored
+  (harmless). Reply with `ECP_P2C_START_OTA_FTP_SERVICE_RESULT` only if you want OTA support.
+
+Takeaway: **bike displays vary (landscape 800×386 AND portrait 460×750, AP AND Wi-Fi Direct).** Treat the
+capture resolution/orientation as **per-bike**, driven by `REQ_RV_CONFIG_CAPTURE`, and drive the AA
+projection resolution + encoder size from it.

@@ -44,6 +44,7 @@ class PxcHandshake(
                 log("[$tag] QUERY_SPEED ${frame.payload.asText()} → reply 0x10691")
                 PxcFrame(PxcFrame.CMD_QUERY_SPEED_RLY, ByteArray(0)).write(out)
             }
+            PxcFrame.CMD_START_OTA_FTP -> onStartOtaFtp(tag, frame, out)
             PxcFrame.CMD_CHECK_SN -> onCheckSn(tag, frame, out)
             PxcFrame.CMD_HEARTBEAT -> {
                 PxcFrame(PxcFrame.CMD_HEARTBEAT_ACK, ByteArray(0)).write(out)
@@ -108,6 +109,35 @@ class PxcHandshake(
         }
         log("[$tag] → CHECK_SN_RESULT ${result}")
         PxcFrame(PxcFrame.CMD_CHECK_SN_RESULT, result.toString().toByteArray(Charsets.UTF_8)).write(out)
+    }
+
+    /**
+     * Wi-Fi-Direct / newer firmware (e.g. V1.0.18, sdk 0.9.23.9) advertises supportOTAUpdate and,
+     * mid-connect, asks the phone to host an OTA FTP server so the bike can pull a firmware image
+     * (ECP_C2P_START_OTA_FTP_SERVICE, 0x104a0). The official app runs an Apache FTP server and
+     * replies with ECP_P2C_START_OTA_FTP_SERVICE_RESULT (131712). We do NOT do OTA — but if we
+     * stay silent the bike waits for its result and tears down the whole session (~0.6s), killing
+     * the mirror. So we ACK the request, then decline with isOk:false so the bike abandons OTA and
+     * continues mirroring.
+     */
+    private fun onStartOtaFtp(tag: String, frame: PxcFrame, out: java.io.OutputStream) {
+        val text = frame.payload.asText()
+        log("[$tag] START_OTA_FTP (0x104a0) $text → ack 0x104a1 + decline")
+        val (ctrlPort, dataPort) = try {
+            val j = JSONObject(text); j.optInt("ctrlPort") to j.optInt("dataPort")
+        } catch (e: Exception) { 0 to 0 }
+        // ack the request frame (framework does cmd+1 for needReceiveReply commands)
+        PxcFrame(PxcFrame.CMD_START_OTA_FTP_ACK, ByteArray(0)).write(out)
+        // decline the OTA FTP service so the bike stops waiting and proceeds with mirroring
+        val result = JSONObject().apply {
+            put("isOk", false)
+            put("dataPort", dataPort)
+            put("ctrlPort", ctrlPort)
+            put("errCode", -1)
+            put("errMsg", "ota not supported")
+        }
+        log("[$tag] → START_OTA_FTP_RESULT(131712) $result")
+        PxcFrame(PxcFrame.CMD_START_OTA_FTP_RESULT, result.toString().toByteArray(Charsets.UTF_8)).write(out)
     }
 }
 

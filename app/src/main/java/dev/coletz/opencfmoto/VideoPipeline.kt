@@ -35,8 +35,8 @@ import kotlin.concurrent.thread
  */
 class VideoPipeline(
     private val context: Context,
-    private val width: Int,
-    private val height: Int,
+    val width: Int,
+    val height: Int,
     private val log: (String) -> Unit,
     /**
      * When true, the pipeline only runs the H.264 encoder and exposes [encoderInputSurface] for
@@ -55,6 +55,9 @@ class VideoPipeline(
 
     private val frameQueue = LinkedBlockingDeque<ByteArray>(8)
     @Volatile private var codecConfig: ByteArray? = null   // SPS/PPS
+    // When a new consumer joins mid-stream we drop encoded P-frames until the next keyframe, so the
+    // consumer's decoder starts on a self-contained IDR instead of an un-decodable P-frame.
+    @Volatile private var waitForKeyframe = false
 
     fun start() {
         if (running) return
@@ -68,7 +71,9 @@ class VideoPipeline(
                 // Surface-input encoders only emit on new buffers; a STATIC screen (e.g. mirror of
                 // an idle app) then produces zero frames and the bike times out. Repeat the last
                 // frame if nothing new arrives so output is continuous even when the screen is still.
-                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000L) // 100ms → ≥10fps floor
+                // 33ms → ~30fps floor: the AA-shared path already runs 30fps and works; own-content
+                // was only ~12fps (bursty, tied to the ticker) and the bike's data thread starved.
+                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 33_000L) // 33ms → ~30fps floor
             }
             val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             // Prefer Baseline (embedded HU decoders often require it); fall back if the encoder rejects it.
@@ -197,11 +202,16 @@ class VideoPipeline(
                     log("[VIDEO] got codec config (SPS/PPS) ${bytes.size}b")
                 } else {
                     val isKey = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-                    val out = if (isKey && codecConfig != null) codecConfig!! + bytes else bytes
-                    // Keep the queue fresh: if full, drop oldest so we never lag far behind.
-                    if (!frameQueue.offerLast(out)) {
-                        frameQueue.pollFirst()
-                        frameQueue.offerLast(out)
+                    if (waitForKeyframe && !isKey) {
+                        // A consumer just joined; skip P-frames until the first keyframe.
+                    } else {
+                        if (isKey) waitForKeyframe = false
+                        val out = if (isKey && codecConfig != null) codecConfig!! + bytes else bytes
+                        // Keep the queue fresh: if full, drop oldest so we never lag far behind.
+                        if (!frameQueue.offerLast(out)) {
+                            frameQueue.pollFirst()
+                            frameQueue.offerLast(out)
+                        }
                     }
                 }
             }
@@ -220,6 +230,28 @@ class VideoPipeline(
     /** Called by the data socket on each REQ_RV_DATA_NEXT(114). Returns one access unit. */
     fun pollFrame(timeoutMs: Long): ByteArray? =
         try { frameQueue.pollFirst(timeoutMs, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) { null }
+
+    /**
+     * Force the encoder to emit a fresh keyframe (SPS/PPS + IDR) and drop stale queued frames.
+     *
+     * The AA-fed encoder may have been running for many seconds before the bike connects, so the
+     * frame queue holds mid-GOP P-frames the bike's decoder can't start on. A bike that only ever
+     * sees P-frames (no IDR) times out and resets after a few frames. Calling this when the bike
+     * begins pulling (REQ_RV_DATA_START) guarantees the first frame it receives is a self-contained
+     * keyframe.
+     */
+    fun requestKeyFrameAndFlush() {
+        frameQueue.clear()
+        waitForKeyframe = true
+        try {
+            val p = android.os.Bundle()
+            p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            codec?.setParameters(p)
+            log("[VIDEO] requested sync frame + flushed queue (client join)")
+        } catch (e: Exception) {
+            log("[VIDEO] requestKeyFrame failed: $e")
+        }
+    }
 
     fun stop() {
         running = false

@@ -52,6 +52,9 @@ class EasyConnProber(
     @Volatile private var negW = 800
     @Volatile private var negH = 384
     @Volatile private var framesSent = 0
+    // Diagnostic: a portrait bike can't accept the landscape AA encoder. When it requests portrait,
+    // don't share AA — run a dedicated own-content pipeline at the bike's requested size instead.
+    @Volatile private var forceOwnContent = false
 
     fun start(network: Network?) {
         if (running) { log("already running"); return }
@@ -208,6 +211,29 @@ class EasyConnProber(
         }
     }
 
+    /** Summarize the Annex-B NAL unit types in an access unit, e.g. "SPS+PPS+IDR" or "P". */
+    private fun nalSummary(frame: ByteArray): String {
+        val types = ArrayList<String>()
+        var i = 0
+        while (i + 4 < frame.size) {
+            // find start code 00 00 00 01 or 00 00 01
+            val sc4 = frame[i].toInt() == 0 && frame[i+1].toInt() == 0 && frame[i+2].toInt() == 0 && frame[i+3].toInt() == 1
+            val sc3 = frame[i].toInt() == 0 && frame[i+1].toInt() == 0 && frame[i+2].toInt() == 1
+            if (sc4 || sc3) {
+                val nalIdx = i + (if (sc4) 4 else 3)
+                if (nalIdx < frame.size) {
+                    when (frame[nalIdx].toInt() and 0x1F) {
+                        7 -> types.add("SPS"); 8 -> types.add("PPS"); 5 -> types.add("IDR")
+                        1 -> types.add("P"); 6 -> types.add("SEI"); else -> types.add("n${frame[nalIdx].toInt() and 0x1F}")
+                    }
+                }
+                i = nalIdx + 1
+            } else i++
+            if (types.size >= 6) break
+        }
+        return if (types.isEmpty()) "?" else types.joinToString("+")
+    }
+
     private fun sendReqBase(out: OutputStream, cmdType: Int, body: ByteArray?) {
         val len = body?.size ?: 0
         val h = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
@@ -231,8 +257,30 @@ class EasyConnProber(
                 val wantEncoder = if (body.size >= 12) cfg.getInt(8) else 2
                 val supportExtend = if (body.size >= 30) body[29] else 0
                 log("[$tag] REQ_CONFIG_CAPTURE w=$w h=$h fps=$fps wantEncoder=$wantEncoder ext=$supportExtend len=${body.size}")
-                negW = w and 0xFFF0
-                negH = h and 0xFFF0
+                val reqW = w and 0xFFF0
+                val reqH = h and 0xFFF0
+                // A shared external encoder (Android Auto) already runs at a FIXED resolution and
+                // cannot be resized mid-stream. If we echo the bike's requested size but stream a
+                // different one, the bike sets its decoder to the wrong dimensions and RESETs after
+                // the first frames (seen on the 460x750 portrait bike). So report the encoder's
+                // ACTUAL output resolution; the bike then scales it onto its own panel.
+                val shared = AaVideoBridge.pipeline
+                // Portrait bike (taller than wide) can't accept the landscape AA encoder. When AA is
+                // sharing landscape but the bike wants portrait, DON'T share — run a dedicated
+                // own-content pipeline at the bike's own size so orientation matches. (Diagnostic.)
+                val bikePortrait = reqH > reqW && reqW > 0
+                val sharedLandscape = shared != null && shared.width >= shared.height
+                forceOwnContent = bikePortrait && sharedLandscape
+                if (shared != null && !forceOwnContent) {
+                    negW = shared.width
+                    negH = shared.height
+                    log("[$tag] shared AA encoder is ${negW}x${negH}; reporting that (bike requested ${reqW}x${reqH})")
+                } else {
+                    negW = reqW
+                    negH = reqH
+                    if (forceOwnContent)
+                        log("[$tag] bike is PORTRAIT (${reqW}x${reqH}) but AA is landscape (${shared?.width}x${shared?.height}); using dedicated portrait own-content pipeline (diagnostic)")
+                }
                 // RLY_RV_CONFIG_CAPTURE (17): encoder(i32) | width&~15(s16) | height&~15(s16) | ext(byte)
                 val rly = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
                 rly.putInt(0, if (wantEncoder == 0) 2 else wantEncoder)
@@ -249,6 +297,7 @@ class EasyConnProber(
                 sendReqBase(out, 49, v.array())
             }
             64 -> { // REQ_HEARTBEAT → 65
+                log("[$tag] REQ_HEARTBEAT(64) → RLY 65")
                 sendReqBase(out, 65, null)
             }
             96 -> { // REQ_CONFIGCAPTUREREXTEND → 97 (JSON). Send state OK.
@@ -262,30 +311,34 @@ class EasyConnProber(
             112 -> { // REQ_RV_DATA_START → start encoder, then RLY_RV_DATA_START(113)
                 if (video == null) {
                     val shared = AaVideoBridge.pipeline
-                    if (shared != null) {
+                    if (shared != null && !forceOwnContent) {
                         // Android Auto is running: pull encoded frames from its (already started)
                         // pipeline instead of creating our own Presentation/mirror source.
                         video = shared
                         ownsVideo = false
                         log("[$tag] REQ_RV_DATA_START(112): using shared Android Auto video pipeline")
                     } else {
-                        log("[$tag] REQ_RV_DATA_START(112): starting video ${negW}x${negH}")
+                        log("[$tag] REQ_RV_DATA_START(112): starting dedicated own-content video ${negW}x${negH}${if (forceOwnContent) " (portrait diagnostic)" else ""}")
                         video = VideoPipeline(context, negW, negH, log).also { it.start() }
                         ownsVideo = true
                     }
                 }
+                // A newly-started data stream must begin on a keyframe: force the (possibly
+                // long-running, AA-shared) encoder to emit a fresh SPS/PPS+IDR and drop stale
+                // P-frames, or the bike decodes nothing and resets after a few frames.
+                video?.requestKeyFrameAndFlush()
                 log("[$tag] → RLY 113")
                 sendReqBase(out, 113, null)
             }
             114 -> { // REQ_RV_DATA_NEXT — bike pulling a frame (data socket); send one access unit raw
                 val frame = video?.pollFrame(1500)
                 if (frame == null) {
-                    log("[$tag] REQ_RV_DATA_NEXT(114): no frame ready")
+                    log("[$tag] REQ_RV_DATA_NEXT(114): no frame ready (ext=${body.size}b)")
                 } else {
                     sendFrameRaw(out, frame)
                     framesSent++
-                    if (framesSent <= 5 || framesSent % 60 == 0)
-                        log("[$tag] sent frame #$framesSent (${frame.size}b)")
+                    if (framesSent <= 8 || framesSent % 60 == 0)
+                        log("[$tag] sent frame #$framesSent (${frame.size}b, ${nalSummary(frame)})")
                 }
             }
             else -> {
