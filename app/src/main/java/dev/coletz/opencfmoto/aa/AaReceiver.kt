@@ -3,7 +3,8 @@
 //   1. Listen on TCP 127.0.0.1:5288 (+ NSD _aawireless._tcp).
 //   2. Launch Google Android Auto's WirelessStartupActivity pointed at 127.0.0.1:5288 (no VPN).
 //   3. Accept the inbound socket, run the AAP version+SSL handshake, point the H.264 decoder at
-//      the supplied encoder Surface, and start the message loop → AA video flows into the encoder.
+//      the supplied video sink Surface (SurfaceCropper input, or the raw encoder surface as
+//      fallback), and start the message loop → AA video flows toward the encoder.
 package dev.coletz.opencfmoto.aa
 
 import android.content.Context
@@ -17,7 +18,8 @@ import kotlin.concurrent.thread
 
 class AaReceiver(
     private val context: Context,
-    private val encoderSurface: Surface,
+    /** Sink for decoded AA video: the SurfaceCropper input (or the raw encoder surface as fallback). */
+    private val videoSurface: Surface,
     private val log: (String) -> Unit,
 ) {
     companion object {
@@ -124,8 +126,8 @@ class AaReceiver(
             connection = null
             return
         }
-        log("[AA] handshake OK — pointing decoder at encoder surface and starting read loop")
-        videoDecoder.setSurface(encoderSurface)
+        log("[AA] handshake OK — pointing decoder at video sink surface and starting read loop")
+        videoDecoder.setSurface(videoSurface)
         t.startReading()
         log("[AA] read loop started — expecting ServiceDiscovery then video")
     }

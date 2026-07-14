@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import dev.coletz.opencfmoto.aa.AaReceiver
+import dev.coletz.opencfmoto.aa.ServiceDiscoveryResponse
 
 /**
  * Foreground service that hosts the Android Auto receiver end-to-end (M4):
@@ -25,6 +26,7 @@ import dev.coletz.opencfmoto.aa.AaReceiver
 class AndroidAutoService : Service() {
 
     private var pipeline: VideoPipeline? = null
+    private var cropper: SurfaceCropper? = null
     private var receiver: AaReceiver? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -81,8 +83,15 @@ class AndroidAutoService : Service() {
     private fun startReceiver() {
         if (receiver != null) { LogBus.log("[AA] receiver already started"); return }
         try {
-            // Encoder at the bike's native 800x384 (AA projects 800x480 → scaled by the surface).
-            val vp = VideoPipeline(applicationContext, 800, 384, LogBus::log, externalSource = true)
+            // Encoder at the bike's native 800x384. AA streams 800x480 with the UI in a centered
+            // 800x384 viewport (margins); the decoder crops the bars onto this surface 1:1.
+            val vp = VideoPipeline(
+                applicationContext,
+                ServiceDiscoveryResponse.BIKE_WIDTH,
+                ServiceDiscoveryResponse.BIKE_HEIGHT,
+                LogBus::log,
+                externalSource = true,
+            )
             vp.start()
             val surface = vp.encoderInputSurface()
             if (surface == null) {
@@ -93,7 +102,30 @@ class AndroidAutoService : Service() {
             }
             pipeline = vp
             AaVideoBridge.pipeline = vp
-            receiver = AaReceiver(applicationContext, surface, LogBus::log).also { it.start() }
+
+            // GL crop stage: the AA decoder renders the full 800x480 stream (UI centered in an
+            // 800x384 viewport, black margin bars top/bottom) into the cropper, which draws only
+            // the viewport onto the encoder surface. Rendering the decoder straight into the
+            // encoder surface stretches (scaling modes are ignored there), so if GL init fails
+            // we fall back to that as a degraded mode.
+            val marginX = (ServiceDiscoveryResponse.AA_WIDTH - ServiceDiscoveryResponse.BIKE_WIDTH) / 2
+            val marginY = (ServiceDiscoveryResponse.AA_HEIGHT - ServiceDiscoveryResponse.BIKE_HEIGHT) / 2
+            val cr = SurfaceCropper(
+                surface,
+                ServiceDiscoveryResponse.AA_WIDTH, ServiceDiscoveryResponse.AA_HEIGHT,
+                marginX, marginY,
+                ServiceDiscoveryResponse.BIKE_WIDTH, ServiceDiscoveryResponse.BIKE_HEIGHT,
+                LogBus::log,
+            )
+            val decoderSurface = cr.start()
+            if (decoderSurface != null) {
+                cropper = cr
+            } else {
+                LogBus.log("[AA] GL crop unavailable — decoder will render straight to encoder (stretched)")
+                cr.release()
+            }
+
+            receiver = AaReceiver(applicationContext, decoderSurface ?: surface, LogBus::log).also { it.start() }
         } catch (e: Exception) {
             LogBus.log("[AA] receiver start failed: $e")
             stopSelf()
@@ -104,6 +136,8 @@ class AndroidAutoService : Service() {
         isRunning = false
         try { receiver?.stop() } catch (_: Exception) {}
         receiver = null
+        try { cropper?.release() } catch (_: Exception) {}
+        cropper = null
         AaVideoBridge.pipeline = null
         try { pipeline?.stop() } catch (_: Exception) {}
         pipeline = null

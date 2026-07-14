@@ -1,6 +1,7 @@
 // Adapted from headunit-revived (AGPLv3): aap/protocol/messages/ServiceDiscoveryResponse.kt
-// Video-only head-unit profile for OpenCfMoto: advertises 800x480 H.264 video (GPU-scaled to
-// the bike's 800x384 encoder), a driving-status sensor, a touchscreen input service, and a PCM
+// Video-only head-unit profile for OpenCfMoto: advertises 800x480 H.264 video with margins so
+// the phone renders the UI into a centered 800x384 viewport (cropped to the bike panel by the
+// decoder — see VideoDecoder), a driving-status sensor, a touchscreen input service, and a PCM
 // microphone (required for AA bring-up). Audio sink, navigation-status, media-playback and
 // bluetooth services from HUR are intentionally dropped (video-only v1 — see docs 03 M5).
 package dev.coletz.opencfmoto.aa
@@ -16,9 +17,16 @@ class ServiceDiscoveryResponse
 
     companion object {
         // AA won't project at the bike's native 800x384; request the smallest fixed enum
-        // (800x480) and let the decoder->encoder Surface scale it down to 800x384.
+        // (800x480) and declare the leftover as margins. The phone then lays out the UI in a
+        // centered (AA_WIDTH - MARGIN_WIDTH) x (AA_HEIGHT - MARGIN_HEIGHT) viewport with black
+        // bars in the margins, so nothing is stretched. VideoDecoder crops the bars away when
+        // rendering onto the 800x384 encoder surface (SCALE_TO_FIT_WITH_CROPPING).
         const val AA_WIDTH = 800
         const val AA_HEIGHT = 480
+        const val BIKE_WIDTH = 800
+        const val BIKE_HEIGHT = 384
+        private const val MARGIN_WIDTH = AA_WIDTH - BIKE_WIDTH    // 0
+        private const val MARGIN_HEIGHT = AA_HEIGHT - BIKE_HEIGHT // 96 → 48px bar top + bottom
         private const val DENSITY_DPI = 160
 
         private fun makeProto(): Message {
@@ -45,8 +53,8 @@ class ServiceDiscoveryResponse
                             codecResolution = Control.Service.MediaSinkService.VideoConfiguration.VideoCodecResolutionType._800x480
                             frameRate = Control.Service.MediaSinkService.VideoConfiguration.VideoFrameRateType._30
                             setDensity(DENSITY_DPI)
-                            setMarginWidth(0)
-                            setMarginHeight(0)
+                            setMarginWidth(MARGIN_WIDTH)
+                            setMarginHeight(MARGIN_HEIGHT)
                             setVideoCodecType(Media.MediaCodecType.MEDIA_CODEC_VIDEO_H264_BP)
                         }.build()
                     )

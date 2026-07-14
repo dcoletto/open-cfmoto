@@ -22,6 +22,13 @@ interface VideoDimensionsListener {
 class VideoDecoder {
     companion object {
         private const val TIMEOUT_US = 10000L
+
+        // The AA stream is 800x480 with the UI in a centered 800x384 viewport (margins declared
+        // in ServiceDiscoveryResponse); SurfaceCropper removes the margin bars. The normal sink
+        // is the cropper's SurfaceTexture, where scaling modes are irrelevant (buffers pass at
+        // native size). Crop mode only matters in the degraded fallback where the decoder
+        // renders straight into the encoder surface — and even there vendors may ignore it.
+        private const val SCALING_MODE = MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
     }
 
     private var codec: MediaCodec? = null
@@ -68,7 +75,7 @@ class VideoDecoder {
             mHeight = newHeight
             dimensionsListener?.onVideoDimensionsChanged(mWidth, mHeight)
         }
-        try { codec?.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT) } catch (e: Exception) {}
+        try { codec?.setVideoScalingMode(SCALING_MODE) } catch (e: Exception) {}
     }
 
     fun setSurface(surface: Surface?) {
@@ -222,7 +229,7 @@ class VideoDecoder {
 
             AaLog.i("Configuring decoder: $bestCodec for ${width}x${height}")
             codec?.configure(format, mSurface, null, 0)
-            try { codec?.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT) } catch (e: Exception) {}
+            try { codec?.setVideoScalingMode(SCALING_MODE) } catch (e: Exception) {}
             codec?.start()
 
             running = true
