@@ -1,3 +1,14 @@
+# ARCHIVED #
+
+Repository has been archived, it will stay here as a PoC used by many other devs as a foundation for their apps.
+I don't have the time to keep up the work, so I am just going to suggest other apps.
+Check out OpenCFMoto for a complete app working on many bikes - even some non-cfmoto ones!
+
+Reddit: https://www.reddit.com/r/cfmoto/comments/1vaifvu/opencfmoto_update_10k_installs_android_auto_on/
+GitHub: https://github.com/zanderp/open-cfmoto/
+
+---
+
 This app tries to provide support for Android Auto on CFMoto bikes with MotoPlay support.
 
 Everything that has been done is a hack, it should not be considered stable or production ready (and probably never will). 
